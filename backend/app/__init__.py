@@ -8,8 +8,10 @@ jwt = JWTManager()
 
 def create_app(config_name='development'):
     app = Flask(__name__)
-    CORS(app)
-
+    CORS(app, origins="*", supports_credentials=False)
+    import sys
+    import os
+    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from config import config
     app.config.from_object(config[config_name])
     
@@ -18,13 +20,12 @@ def create_app(config_name='development'):
     
     with app.app_context():
         from app.models import User, Article, Summary
-
-
-
-    from app.routes import health_bp, ping_bp, test_db_bp, auth_bp
-    app.register_blueprint(health_bp) 
-    app.register_blueprint(ping_bp)   
-    app.register_blueprint(test_db_bp)
+    
+    from app.routes import (health_bp,  articles_bp, summaries_bp)
+    from app.routes.auth import auth_bp
+    app.register_blueprint(health_bp)
     app.register_blueprint(auth_bp)
+    app.register_blueprint(articles_bp)
+    app.register_blueprint(summaries_bp)
     
     return app

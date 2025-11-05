@@ -10,7 +10,8 @@ class Config:
     JWT_TOKEN_LOCATION = ['headers']
     JWT_HEADER_NAME = 'Authorization'
     JWT_HEADER_TYPE = 'Bearer'
-
+    APP_NAME = 'PrecisAI'
+    DEBUG = False
 
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     SQLALCHEMY_ECHO = False
@@ -32,8 +33,15 @@ class ProductionConfig(Config):
     SQLALCHEMY_ECHO = False
     JWT_ACCESS_TOKEN_EXPIRES = timedelta(hours=1)
 
+class TestingConfig(Config):
+    DEBUG = True
+    TESTING = True
+    SQLALCHEMY_DATABASE_URI = 'sqlite:///:memory:' 
+    JWT_ACCESS_TOKEN_EXPIRES = timedelta(hours=24)
+
 config = {
     'development': DevelopmentConfig,
     'production': ProductionConfig,
+    'testing': TestingConfig,
     'default': DevelopmentConfig 
 }

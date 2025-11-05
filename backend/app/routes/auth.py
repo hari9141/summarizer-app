@@ -3,9 +3,10 @@ from flask_jwt_extended import create_access_token, create_refresh_token, jwt_re
 from app import db
 from app.models import User
 
-bp = Blueprint('auth', __name__, url_prefix='/api/auth')
 
-@bp.route('/signup', methods=['POST'])
+auth_bp = Blueprint('auth', __name__, url_prefix='/api/auth')
+
+@auth_bp.route('/signup', methods=['POST'])
 def signup():
     data = request.get_json()
     
@@ -71,7 +72,7 @@ def signup():
         return jsonify({'error': f'Failed to create user: {str(e)}'}), 500
 
 
-@bp.route('/login', methods=['POST'])
+@auth_bp.route('/login', methods=['POST'])
 def login():
     data = request.get_json()
     
@@ -103,7 +104,7 @@ def login():
     }), 200
 
 
-@bp.route('/refresh', methods=['POST'])
+@auth_bp.route('/refresh', methods=['POST'])
 @jwt_required(refresh=True)
 def refresh():
     current_user_id = int(get_jwt_identity())
@@ -115,7 +116,7 @@ def refresh():
     }), 200
 
 
-@bp.route('/me', methods=['GET'])
+@auth_bp.route('/me', methods=['GET'])
 @jwt_required()
 def get_current_user():
     current_user_id = int(get_jwt_identity())

@@ -1,0 +1,80 @@
+version: '3.9'
+
+services:
+  backend:
+    build:
+      context: ./backend
+    container_name: precisai_backend
+    ports:
+      - "5000:5000"
+    environment:
+      DATABASE_URL: postgresql://postgres:password123@db:5432/summarizer_db
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      HUGGING_FACE_API_KEY: ${HUGGING_FACE_API_KEY}
+      FLASK_ENV: production
+    depends_on:
+      - db
+      - redis
+    networks:
+      - precisai_net
+    command: gunicorn --bind 0.0.0.0:5000 --workers 2 run:app
+
+  celery_worker:
+    build:
+      context: ./backend
+    container_name: precisai_celery_worker
+    environment:
+      DATABASE_URL: postgresql://postgres:password123@db:5432/summarizer_db
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      HUGGING_FACE_API_KEY: ${HUGGING_FACE_API_KEY}
+    depends_on:
+      - db
+      - redis
+    networks:
+      - precisai_net
+    command: celery -A app.utils.celery_worker.celery_app worker --loglevel=info
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: precisai_frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    networks:
+      - precisai_net
+
+  db:
+    image: postgres:15
+    container_name: precisai_db
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password123
+      - POSTGRES_DB=summarizer_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    networks:
+      - precisai_net
+
+  redis:
+    image: redis:7-alpine
+    container_name: precisai_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - precisai_net
+
+volumes:
+  db_data:
+  redis_data:
+
+networks:
+  precisai_net:
+    driver: bridge
