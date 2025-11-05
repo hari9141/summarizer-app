@@ -6,10 +6,14 @@ from flask_jwt_extended import JWTManager
 db = SQLAlchemy()
 jwt = JWTManager()
 
-def create_app(config_name='development'):
+def create_app(config_name='production'):
     app = Flask(__name__)
-    CORS(app, origins=["https://summarizer-app-xi.vercel.app"], supports_credentials=True)
-
+    CORS(app, 
+         origins=["https://summarizer-app-xi.vercel.app"],  
+         supports_credentials=True,
+         methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+         allow_headers=["Content-Type", "Authorization"]
+    )
     import sys
     import os
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
