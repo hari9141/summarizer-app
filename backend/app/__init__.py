@@ -9,7 +9,7 @@ jwt = JWTManager()
 def create_app(config_name='production'):
     app = Flask(__name__)
     CORS(app, 
-         origins=["https://summarizer-app-xi.vercel.app"],  
+         origins=["https://summarizer-app-xi.vercel.app","*"],  
          supports_credentials=True,
          methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
          allow_headers=["Content-Type", "Authorization"]
