@@ -8,7 +8,8 @@ jwt = JWTManager()
 
 def create_app(config_name='development'):
     app = Flask(__name__)
-    CORS(app, origins="*", supports_credentials=False)
+    CORS(app, origins=["https://summarizer-app-xi.vercel.app"], supports_credentials=True)
+
     import sys
     import os
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
