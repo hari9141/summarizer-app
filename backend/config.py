@@ -29,7 +29,7 @@ class DevelopmentConfig(Config):
 class ProductionConfig(Config):
     DEBUG = False  
     TESTING = False
-    SQLALCHEMY_DATABASE_URI = os.getenv('DATABASE_URL')
+    SQLALCHEMY_DATABASE_URI = os.getenv('DATABASE_URL',"postgresql://summarizer_db_nvvj_user:KhsWqFI0JJp5KWXJzXG5MEQEyO9OuxSc@dpg-d45llcre5dus73c88lsg-a.oregon-postgres.render.com/summarizer_db_nvvj")
     SQLALCHEMY_ECHO = False
     JWT_ACCESS_TOKEN_EXPIRES = timedelta(hours=1)
 
