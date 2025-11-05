@@ -1,12 +1,22 @@
 import axios from 'axios';
 
+// PRODUCTION API URL (no environment variable dependency)
+const PRODUCTION_API_URL = 'https://precisai-backend-ryt8.onrender.com/api';
+const DEVELOPMENT_API_URL = 'http://localhost:5000/api';
+
+// Detect if running in production or development
+const isProduction = window.location.hostname !== 'localhost';
+const API_BASE_URL = isProduction ? PRODUCTION_API_URL : DEVELOPMENT_API_URL;
+
+console.log('Current Environment:', isProduction ? 'PRODUCTION' : 'DEVELOPMENT');
+console.log('API Base URL:', API_BASE_URL);
+
 const api = axios.create({
-  baseURL: process.env.REACT_APP_API_URL || "http://localhost:5000/api",
+  baseURL: API_BASE_URL,
   headers: {
     'Content-Type': 'application/json',
   },
 });
-
 
 api.interceptors.request.use(
   (config) => {
