@@ -1,6 +1,9 @@
+
+
 import requests
 import os
 import hashlib
+import json
 from dotenv import load_dotenv
 from app.utils.redis_client import get_redis_client
 from .celery_worker import celery_app
@@ -93,10 +96,8 @@ def get_summarizer():
         _summarizer = HFSummarizer()
     return _summarizer
 
-# THIS IS THE KEY - Use time_limit and proper error handling
-@celery_app.task(bind=True, time_limit=300, soft_time_limit=280)
-def summarize_text_task(self, text, length='medium', article_id=None, user_id=None):
-    """Celery task - runs in background, not blocking"""
+def summarize_text_task(text, length='medium', article_id=None, user_id=None):
+    """Execute summarization"""
     try:
         from app import create_app, db
         from app.models.summary import Summary
@@ -106,13 +107,13 @@ def summarize_text_task(self, text, length='medium', article_id=None, user_id=No
             redis_client = get_redis_client()
             cache_key = f"summ_{hashlib.sha256((text+length).encode()).hexdigest()}"
             
-            # Check cache first
+            # Check cache
             cached = redis_client.get(cache_key)
             if cached:
-                print(f"✅ CACHE HIT for {cache_key}")
+                print(f"✅ CACHE HIT")
                 if article_id and user_id:
                     existing = Summary.query.filter_by(
-                        article_id=article_id, 
+                        article_id=article_id,
                         user_id=user_id
                     ).first()
                     if not existing:
@@ -126,17 +127,17 @@ def summarize_text_task(self, text, length='medium', article_id=None, user_id=No
                         db.session.commit()
                 return cached
             
-            # Call Hugging Face API
+            # Call HF API
             summarizer = get_summarizer()
             result = summarizer.summarize(text, length)
             
             if not result or len(result) < 20:
                 raise Exception("Invalid summary")
             
-            # Cache for 12 hours (43200 seconds)
+            # Cache
             redis_client.setex(cache_key, 43200, result)
             
-            # Save to database
+            # Save to DB
             if article_id and user_id:
                 summary_obj = Summary(
                     summary_text=result,
@@ -147,9 +148,36 @@ def summarize_text_task(self, text, length='medium', article_id=None, user_id=No
                 db.session.add(summary_obj)
                 db.session.commit()
             
-            print(f"✅ CACHE SAVE and DB SAVE for {cache_key}")
+            print(f"✅ Summary generated")
             return result
     
     except Exception as e:
-        print(f"❌ Summarization task failed: {str(e)}")
+        print(f"❌ Summarization error: {str(e)}")
         raise
+
+# ⬅️ ADD THIS FUNCTION
+def queue_summarization(text, length, article_id, user_id):
+    """Queue summarization via webhook/async"""
+    import uuid
+    redis_client = get_redis_client()
+    
+    # Generate unique task ID
+    task_id = str(uuid.uuid4())
+    
+    # Store task status in Redis (processing state)
+    redis_client.setex(f"task_{task_id}", 600, "processing")
+    
+    # Execute summarization and store result
+    try:
+        result = summarize_text_task(text, length, article_id, user_id)
+        # Store the result
+        redis_client.setex(f"summary_{task_id}", 600, result)
+        redis_client.delete(f"task_{task_id}")
+        print(f"✅ Task {task_id} completed")
+    except Exception as e:
+        redis_client.setex(f"error_{task_id}", 600, str(e))
+        redis_client.delete(f"task_{task_id}")
+        print(f"❌ Task {task_id} failed: {str(e)}")
+    
+    return task_id
+
