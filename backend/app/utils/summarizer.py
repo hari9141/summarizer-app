@@ -11,7 +11,7 @@ class HFSummarizer:
     def __init__(self):
         self.hf_token = os.getenv('HUGGING_FACE_API_KEY')
         if not self.hf_token:
-            print("⚠️ HUGGING_FACE_API_KEY not found")
+            print(" HUGGING_FACE_API_KEY not found")
             self.available = False
             return
         
