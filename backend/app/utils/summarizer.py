@@ -71,39 +71,53 @@ def get_summarizer():
         _summarizer = HFSummarizer()
     return _summarizer
 
-# ⬅️ CELERY TASK
 @celery_app.task(bind=True, time_limit=300, soft_time_limit=280)
 def summarize_text_task(self, text, length='medium', article_id=None, user_id=None):
     """Celery task for async summarization"""
     try:
         from app import create_app, db
         from app.models.summary import Summary
+        import os
+        from dotenv import load_dotenv
+        
+        load_dotenv()
         
         app = create_app('production')
         with app.app_context():
-            redis_client = get_redis_client()
-            cache_key = f"summ_{hashlib.sha256((text+length).encode()).hexdigest()}"
+            # Use REDIS_URL environment variable directly - not local redis_client
+            redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
             
-            # Check cache
-            cached = redis_client.get(cache_key)
-            if cached:
-                print(f"✅ Cache hit")
-                if article_id and user_id:
-                    db.session.add(Summary(
-                        summary_text=cached,
-                        length=length,
-                        article_id=article_id,
-                        user_id=user_id
-                    ))
-                    db.session.commit()
-                return cached
+            try:
+                import redis
+                redis_client = redis.from_url(redis_url, decode_responses=True)
+                cache_key = f"summ_{hashlib.sha256((text+length).encode()).hexdigest()}"
+                
+                # Check cache
+                cached = redis_client.get(cache_key)
+                if cached:
+                    print(f"✅ Cache hit")
+                    if article_id and user_id:
+                        db.session.add(Summary(
+                            summary_text=cached,
+                            length=length,
+                            article_id=article_id,
+                            user_id=user_id
+                        ))
+                        db.session.commit()
+                    return cached
+            except Exception as cache_err:
+                print(f"⚠️ Cache error (continuing anyway): {cache_err}")
+                cached = None
             
             # Generate summary
             summarizer = get_summarizer()
             result = summarizer.summarize(text, length)
             
-            # Cache result
-            redis_client.setex(cache_key, 43200, result)
+            # Try to cache
+            try:
+                redis_client.setex(cache_key, 43200, result)
+            except:
+                pass  # If cache fails, continue anyway
             
             # Save to database
             if article_id and user_id:
