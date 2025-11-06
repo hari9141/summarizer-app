@@ -3,11 +3,14 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 from app import db
 from app.models import Article, Summary
 from app.utils.summarizer import summarize_text_task
+from app.utils.celery_worker import celery_app
+
 bp = Blueprint('summaries', __name__, url_prefix='/api/summaries')
 
 @bp.route('', methods=['POST'])
 @jwt_required()
 def create_summary():
+    """Create a summary - returns task_id immediately, doesn't wait"""
     current_user_id = int(get_jwt_identity())
     data = request.get_json()
     
@@ -33,41 +36,76 @@ def create_summary():
             id=article_id,
             user_id=current_user_id
         ).first()
+        
         if not article:
             return jsonify({'error': 'Article not found'}), 404
+        
         if len(article.content) < 20:
             return jsonify({'error': 'Article content is too short to summarize'}), 400
         
-        print(f"🤖 Generating summary for article {article_id} using Cohere AI")
-
-        try:
-            summary_text = summarize_text_task(article.content.strip(), length='medium', article_id=article_id, user_id=current_user_id)
-        except Exception as e:
-            db.session.rollback()
-            return jsonify({"error": str(e)}), 500
-        summary = Summary(
-            summary_text=summary_text,
+        print(f"🤖 Queueing summary task for article {article_id}")
+        
+        # IMPORTANT: Use .delay() to queue task ASYNCHRONOUSLY
+        task = summarize_text_task.delay(
+            article.content.strip(),
             length=summary_length,
             article_id=article_id,
             user_id=current_user_id
         )
-        db.session.add(summary)
-        db.session.commit()
-        print(f"✅ Summary created successfully (ID: {summary.id})")
+        
+        # Return immediately with task_id (don't wait for result)
         return jsonify({
-            'message': 'Summary created successfully',
-            'summary': summary.to_dict(include_article=True, include_user=True)
-        }), 201
-
+            'message': 'Summary generation started',
+            'task_id': task.id,
+            'article_id': article_id,
+            'status': 'queued'
+        }), 202  # 202 = Accepted (task queued)
+    
     except Exception as e:
-        db.session.rollback()
-        print(f"❌ Error creating summary: {e}")
-        return jsonify({'error': 'Failed to create summary. Please try again.'}), 500
+        print(f"❌ Error queuing summary: {e}")
+        return jsonify({'error': 'Failed to queue summary. Please try again.'}), 500
+
+
+@bp.route('/status/<task_id>', methods=['GET'])
+def get_summary_status(task_id):
+    """Check the status of a summarization task"""
+    try:
+        task = celery_app.AsyncResult(task_id)
+        
+        if task.state == 'PENDING':
+            return jsonify({
+                'status': 'pending',
+                'progress': 0
+            }), 202
+        
+        elif task.state == 'SUCCESS':
+            # Task completed successfully
+            return jsonify({
+                'status': 'done',
+                'summary': task.result
+            }), 200
+        
+        elif task.state == 'FAILURE':
+            # Task failed
+            return jsonify({
+                'status': 'failed',
+                'error': str(task.info)
+            }), 400
+        
+        else:
+            # RETRY or other states
+            return jsonify({
+                'status': task.state
+            }), 202
+    
+    except Exception as e:
+        return jsonify({'error': f'Failed to get status: {str(e)}'}), 500
 
 
 @bp.route('', methods=['GET'])
 @jwt_required()
 def get_summaries():
+    """Get all summaries for current user"""
     article_id = request.args.get('article_id', None, type=int)
     current_user_id = int(get_jwt_identity())
     length_filter = request.args.get('length', None, type=str)
@@ -92,10 +130,13 @@ def get_summaries():
             query = query.filter_by(length=length_filter)
         
         query = query.order_by(Summary.created_at.desc())
-        
         paginated = query.paginate(page=page, per_page=per_page, error_out=False)
         
-        summaries_data = [summary.to_dict(include_article=True, include_user=False) for summary in paginated.items]
+        summaries_data = [
+            summary.to_dict(include_article=True, include_user=False) 
+            for summary in paginated.items
+        ]
+        
         return jsonify({
             'summaries': summaries_data,
             'pagination': {
@@ -113,6 +154,7 @@ def get_summaries():
 @bp.route('/<int:summary_id>', methods=['GET'])
 @jwt_required()
 def get_summary(summary_id):
+    """Get a specific summary"""
     try:
         summary = Summary.query.get(summary_id)
         if not summary:
@@ -127,6 +169,7 @@ def get_summary(summary_id):
 @bp.route('/<int:summary_id>', methods=['DELETE'])
 @jwt_required()
 def delete_summary(summary_id):
+    """Delete a summary"""
     current_user_id = int(get_jwt_identity())
     
     summary = Summary.query.get(summary_id)
