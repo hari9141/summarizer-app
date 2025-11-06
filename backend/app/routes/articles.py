@@ -1,13 +1,12 @@
 from flask import Blueprint, request, jsonify
 from app.models import Article, Summary
-from app.utils.summarizer import summarize_text_task
-from app.utils.celery_worker import celery_app  
+from app.utils.summarizer import queue_summarization, summarize_text_task
+from app.utils.redis_client import get_redis_client
 from app import db
 from flask_jwt_extended import jwt_required, get_jwt_identity
-
+import uuid
 
 bp = Blueprint('articles', __name__, url_prefix='/api/articles')
-
 
 @bp.route('', methods=['POST'])
 @jwt_required()
@@ -36,7 +35,6 @@ def create_article():
         db.session.rollback()
         return jsonify({'error': str(e)}), 500
 
-
 @bp.route('/<int:article_id>', methods=['GET'])
 @jwt_required()
 def get_article(article_id):
@@ -48,7 +46,6 @@ def get_article(article_id):
     
     return jsonify({'article': article.to_dict()}), 200
 
-
 @bp.route('', methods=['GET'])
 @jwt_required()
 def get_articles():
@@ -59,7 +56,6 @@ def get_articles():
         'articles': [article.to_dict() for article in articles],
         'count': len(articles)
     }), 200
-
 
 @bp.route('/<int:article_id>/summarize', methods=['POST'])
 @jwt_required()
@@ -77,58 +73,78 @@ def summarize_article(article_id):
         
         print(f"🤖 Queueing summary task for article {article_id}")
         
-        task = summarize_text_task.delay(
+        # Queue via QStash
+        task_id = queue_summarization(
             article.content.strip(),
             length,
             article_id,
             user_id
         )
         
+        # Store task info in Redis
+        redis_client = get_redis_client()
+        redis_client.setex(f"task_{task_id}", 600, "processing")
+        
         return jsonify({
-            'task_id': task.id,
-            'message': 'Summary generation started (asynchronous)',
+            'task_id': task_id,
+            'message': 'Summary generation started',
             'article_id': article_id
         }), 202
     
     except Exception as e:
-        error_msg = str(e)
-        print(f"❌ Summarization error: {error_msg}")
-        return jsonify({'error': error_msg}), 500
-
+        print(f"❌ Error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
 @bp.route('/summarize_status/<task_id>', methods=['GET'])
 @jwt_required()
 def summarize_status(task_id):
     try:
-        task = celery_app.AsyncResult(task_id)
+        redis_client = get_redis_client()
         
-        if task.state == 'PENDING':
-            return jsonify({'status': 'pending', 'task_id': task_id}), 200
+        # Check if task is done
+        status = redis_client.get(f"task_{task_id}")
+        summary = redis_client.get(f"summary_{task_id}")
         
-        elif task.state == 'SUCCESS':
-            summary_text = task.result
-            return jsonify({
-                'status': 'done', 
-                'summary': summary_text, 
-                'task_id': task_id
-            }), 200
+        if summary:
+            return jsonify({'status': 'done', 'summary': summary}), 200
         
-        elif task.state == 'FAILURE':
-            return jsonify({
-                'status': 'failed', 
-                'error': str(task.info), 
-                'task_id': task_id
-            }), 200
+        elif status == "processing":
+            return jsonify({'status': 'pending'}), 202
         
         else:
-            return jsonify({
-                'status': task.state, 
-                'task_id': task_id
-            }), 200
+            return jsonify({'status': 'unknown'}), 200
     
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+# QStash Webhook endpoint
+@bp.route('/tasks/execute', methods=['POST'])
+def execute_task():
+    """QStash sends webhook here to execute task"""
+    try:
+        data = request.get_json()
+        task_id = request.headers.get('Upstash-Message-Id')
+        
+        if data.get('function_name') == 'summarize_text_task':
+            result = summarize_text_task(
+                data['text'],
+                data['length'],
+                data['article_id'],
+                data['user_id']
+            )
+            
+            # Store result in Redis
+            redis_client = get_redis_client()
+            redis_client.setex(f"summary_{task_id}", 600, result)
+            redis_client.delete(f"task_{task_id}")
+            
+            return jsonify({'status': 'success'}), 200
+        
+        return jsonify({'status': 'unknown task'}), 400
+    
+    except Exception as e:
+        print(f"❌ Task execution error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
 @bp.route('/<int:article_id>', methods=['DELETE'])
 @jwt_required()
