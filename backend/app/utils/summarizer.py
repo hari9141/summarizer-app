@@ -4,24 +4,24 @@ import hashlib
 from dotenv import load_dotenv
 from app.utils.redis_client import get_redis_client
 from .celery_worker import celery_app
-load_dotenv()
 
+load_dotenv()
 
 class HFSummarizer:
     def __init__(self):
         self.hf_token = os.getenv('HUGGING_FACE_API_KEY')
         if not self.hf_token:
-            print(" HUGGING_FACE_API_KEY not found in .env")
+            print("⚠️ HUGGING_FACE_API_KEY not found in .env")
             self.available = False
             return
         
         self.api_url = "https://router.huggingface.co/hf-inference/models/facebook/bart-large-cnn"
         self.available = True
-        print(" Hugging Face BART Summarizer initialized (NEW ROUTER ENDPOINT)")
+        print("✅ Hugging Face BART Summarizer initialized")
     
     def summarize(self, text, length='medium'):
         if not self.available:
-            raise Exception("HF API key not configured - add HUGGING_FACE_API_KEY to .env")
+            raise Exception("HF API key not configured")
         
         if not text or len(text.strip()) < 50:
             raise Exception("Text too short (minimum 50 chars)")
@@ -93,20 +93,28 @@ def get_summarizer():
         _summarizer = HFSummarizer()
     return _summarizer
 
-@celery_app.task(bind=True)
+# THIS IS THE KEY - Use time_limit and proper error handling
+@celery_app.task(bind=True, time_limit=300, soft_time_limit=280)
 def summarize_text_task(self, text, length='medium', article_id=None, user_id=None):
-    from app import create_app, db
-    from app.models import Summary
-    app = create_app('development')
-    with app.app_context():
-        try:
+    """Celery task - runs in background, not blocking"""
+    try:
+        from app import create_app, db
+        from app.models.summary import Summary
+        
+        app = create_app('production')
+        with app.app_context():
             redis_client = get_redis_client()
             cache_key = f"summ_{hashlib.sha256((text+length).encode()).hexdigest()}"
+            
+            # Check cache first
             cached = redis_client.get(cache_key)
             if cached:
                 print(f"✅ CACHE HIT for {cache_key}")
                 if article_id and user_id:
-                    existing = Summary.query.filter_by(article_id=article_id, user_id=user_id).first()
+                    existing = Summary.query.filter_by(
+                        article_id=article_id, 
+                        user_id=user_id
+                    ).first()
                     if not existing:
                         summary_obj = Summary(
                             summary_text=cached,
@@ -117,12 +125,18 @@ def summarize_text_task(self, text, length='medium', article_id=None, user_id=No
                         db.session.add(summary_obj)
                         db.session.commit()
                 return cached
-
+            
+            # Call Hugging Face API
             summarizer = get_summarizer()
             result = summarizer.summarize(text, length)
+            
             if not result or len(result) < 20:
                 raise Exception("Invalid summary")
+            
+            # Cache for 12 hours (43200 seconds)
             redis_client.setex(cache_key, 43200, result)
+            
+            # Save to database
             if article_id and user_id:
                 summary_obj = Summary(
                     summary_text=result,
@@ -132,11 +146,10 @@ def summarize_text_task(self, text, length='medium', article_id=None, user_id=No
                 )
                 db.session.add(summary_obj)
                 db.session.commit()
-
+            
             print(f"✅ CACHE SAVE and DB SAVE for {cache_key}")
             return result
-
-        except Exception as e:
-            db.session.rollback()
-            print(f"❌ Summarization error: {str(e)}")
-            raise
+    
+    except Exception as e:
+        print(f"❌ Summarization task failed: {str(e)}")
+        raise
