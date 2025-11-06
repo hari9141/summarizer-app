@@ -3,6 +3,7 @@ import os
 import hashlib
 from dotenv import load_dotenv
 from app.utils.redis_client import get_redis_client
+from app.utils.celery_worker import celery_app
 
 load_dotenv()
 
@@ -48,7 +49,7 @@ class HFSummarizer:
             )
             
             if resp.status_code != 200:
-                raise Exception(f"HF error: {resp.status_code}")
+                raise Exception(f"API error: {resp.status_code}")
             
             result = resp.json()
             summary = result[0]['summary_text'] if isinstance(result, list) else ""
@@ -70,8 +71,10 @@ def get_summarizer():
         _summarizer = HFSummarizer()
     return _summarizer
 
-def summarize_text_task(text, length='medium', article_id=None, user_id=None):
-    """Main summarization function"""
+# ⬅️ CELERY TASK
+@celery_app.task(bind=True, time_limit=300, soft_time_limit=280)
+def summarize_text_task(self, text, length='medium', article_id=None, user_id=None):
+    """Celery task for async summarization"""
     try:
         from app import create_app, db
         from app.models.summary import Summary
@@ -84,28 +87,25 @@ def summarize_text_task(text, length='medium', article_id=None, user_id=None):
             # Check cache
             cached = redis_client.get(cache_key)
             if cached:
+                print(f"✅ Cache hit")
                 if article_id and user_id:
-                    existing = Summary.query.filter_by(
-                        article_id=article_id, user_id=user_id
-                    ).first()
-                    if not existing:
-                        db.session.add(Summary(
-                            summary_text=cached,
-                            length=length,
-                            article_id=article_id,
-                            user_id=user_id
-                        ))
-                        db.session.commit()
+                    db.session.add(Summary(
+                        summary_text=cached,
+                        length=length,
+                        article_id=article_id,
+                        user_id=user_id
+                    ))
+                    db.session.commit()
                 return cached
             
             # Generate summary
             summarizer = get_summarizer()
             result = summarizer.summarize(text, length)
             
-            # Cache it
+            # Cache result
             redis_client.setex(cache_key, 43200, result)
             
-            # Save to DB
+            # Save to database
             if article_id and user_id:
                 db.session.add(Summary(
                     summary_text=result,
@@ -115,14 +115,9 @@ def summarize_text_task(text, length='medium', article_id=None, user_id=None):
                 ))
                 db.session.commit()
             
+            print(f"✅ Summary saved")
             return result
     
     except Exception as e:
-        print(f"❌ Summarization failed: {str(e)}")
-        raise
-
-def queue_summarization(text, length, article_id, user_id):
-    """Queue a summarization task"""
-    from app.utils.qstash_client import queue_task_simple
-    return queue_task_simple('summarize_text_task', 
-        text=text, length=length, article_id=article_id, user_id=user_id)
+        print(f"❌ Task failed: {str(e)}")
+        raise self.retry(exc=e, countdown=5, max_retries=3)
