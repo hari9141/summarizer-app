@@ -60,7 +60,7 @@ class HFSummarizer:
             return summary
         
         except Exception as e:
-            print(f"❌ Error: {str(e)}")
+            print(f" Error: {str(e)}")
             raise
 
 _summarizer = None
