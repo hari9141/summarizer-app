@@ -1,6 +1,7 @@
 from flask import Blueprint, request, jsonify
 from app.models import Article, Summary
 from app.utils.summarizer import summarize_text_task
+from app.utils.celery_worker import celery_app  # ⬅️ ADD THIS
 from app import db
 from flask_jwt_extended import jwt_required, get_jwt_identity
 
@@ -73,13 +74,23 @@ def summarize_article(article_id):
         length = data.get('length', 'medium')
         if length not in ['short', 'medium', 'long']:
             length = 'medium'
-        print(f"🤖 Generating summary for article {article_id} using Hugging Face AI")
-        task = summarize_text_task.apply_async(args=[article.content, length, article.id, user_id])
+        
+        print(f"🤖 Queueing summary task for article {article_id}")
+        
+        # ⬅️ FIX 1: Use .delay() instead of .apply_async()
+        task = summarize_text_task.delay(
+            article.content.strip(),
+            length,
+            article_id,
+            user_id
+        )
+        
         return jsonify({
             'task_id': task.id,
             'message': 'Summary generation started (asynchronous)',
             'article_id': article_id
         }), 202
+    
     except Exception as e:
         error_msg = str(e)
         print(f"❌ Summarization error: {error_msg}")
@@ -90,16 +101,33 @@ def summarize_article(article_id):
 @jwt_required()
 def summarize_status(task_id):
     try:
-        task = summarize_text_task.AsyncResult(task_id)
+        # ⬅️ FIX 2: Use celery_app.AsyncResult() instead of summarize_text_task.AsyncResult()
+        task = celery_app.AsyncResult(task_id)
+        
         if task.state == 'PENDING':
             return jsonify({'status': 'pending', 'task_id': task_id}), 200
+        
         elif task.state == 'SUCCESS':
             summary_text = task.result
-            return jsonify({'status': 'done', 'summary': summary_text, 'task_id': task_id}), 200
+            return jsonify({
+                'status': 'done', 
+                'summary': summary_text, 
+                'task_id': task_id
+            }), 200
+        
         elif task.state == 'FAILURE':
-            return jsonify({'status': 'failed', 'error': str(task.info), 'task_id': task_id}), 200
+            return jsonify({
+                'status': 'failed', 
+                'error': str(task.info), 
+                'task_id': task_id
+            }), 200
+        
         else:
-            return jsonify({'status': task.state, 'task_id': task_id}), 200
+            return jsonify({
+                'status': task.state, 
+                'task_id': task_id
+            }), 200
+    
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
