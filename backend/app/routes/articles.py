@@ -1,7 +1,7 @@
 from flask import Blueprint, request, jsonify
 from app.models import Article, Summary
 from app.utils.summarizer import summarize_text_task
-from app.utils.celery_worker import celery_app  # ⬅️ ADD THIS
+from app.utils.celery_worker import celery_app  
 from app import db
 from flask_jwt_extended import jwt_required, get_jwt_identity
 
@@ -77,7 +77,6 @@ def summarize_article(article_id):
         
         print(f"🤖 Queueing summary task for article {article_id}")
         
-        # ⬅️ FIX 1: Use .delay() instead of .apply_async()
         task = summarize_text_task.delay(
             article.content.strip(),
             length,
@@ -101,7 +100,6 @@ def summarize_article(article_id):
 @jwt_required()
 def summarize_status(task_id):
     try:
-        # ⬅️ FIX 2: Use celery_app.AsyncResult() instead of summarize_text_task.AsyncResult()
         task = celery_app.AsyncResult(task_id)
         
         if task.state == 'PENDING':
