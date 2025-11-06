@@ -1,7 +1,7 @@
 from flask import Blueprint, request, jsonify
 from app.models import Article, Summary
-from app.utils.summarizer import queue_summarization
-from app.utils.redis_client import get_redis_client
+from app.utils.summarizer import summarize_text_task
+from app.utils.celery_worker import celery_app
 from app import db
 from flask_jwt_extended import jwt_required, get_jwt_identity
 
@@ -29,7 +29,6 @@ def create_article():
             'article': article.to_dict(),
             'message': 'Article created'
         }), 201
-        
     except Exception as e:
         db.session.rollback()
         return jsonify({'error': str(e)}), 500
@@ -63,16 +62,16 @@ def summarize_article(article_id):
     
     article = Article.query.filter_by(id=article_id, user_id=user_id).first()
     if not article:
-        return jsonify({'error': 'Article not found'}), 404
+        return jsonify({'error': 'Not found'}), 404
     
     data = request.get_json() or {}
     length = data.get('length', 'medium')
-    
     if length not in ['short', 'medium', 'long']:
         length = 'medium'
     
     try:
-        task_id = queue_summarization(
+        # Queue Celery task
+        task = summarize_text_task.delay(
             article.content.strip(),
             length,
             article_id,
@@ -80,8 +79,8 @@ def summarize_article(article_id):
         )
         
         return jsonify({
-            'task_id': task_id,
-            'message': 'Summary queued',
+            'task_id': task.id,
+            'message': 'Summarization started',
             'article_id': article_id
         }), 202
     
@@ -90,22 +89,20 @@ def summarize_article(article_id):
 
 @bp.route('/summarize_status/<task_id>', methods=['GET'])
 def summarize_status(task_id):
-    redis_client = get_redis_client()
+    """Poll for task status"""
+    task = celery_app.AsyncResult(task_id)
     
-    summary = redis_client.get(f"summary_{task_id}")
-    error = redis_client.get(f"error_{task_id}")
-    status = redis_client.get(f"task_{task_id}")
-    
-    if summary:
-        return jsonify({'status': 'done', 'summary': summary}), 200
-    
-    if error:
-        return jsonify({'status': 'failed', 'error': error}), 400
-    
-    if status == "processing":
+    if task.state == 'PENDING':
         return jsonify({'status': 'pending'}), 202
     
-    return jsonify({'status': 'unknown'}), 200
+    elif task.state == 'SUCCESS':
+        return jsonify({'status': 'done', 'summary': task.result}), 200
+    
+    elif task.state == 'FAILURE':
+        return jsonify({'status': 'failed', 'error': str(task.info)}), 400
+    
+    else:
+        return jsonify({'status': task.state}), 202
 
 @bp.route('/<int:article_id>', methods=['DELETE'])
 @jwt_required()
