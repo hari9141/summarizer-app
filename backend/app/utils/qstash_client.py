@@ -1,47 +1,34 @@
 import os
-import json
-import requests
-from dotenv import load_dotenv
+import uuid
+import threading
+from app.utils.redis_client import get_redis_client
 
-load_dotenv()
-
-class QStashClient:
-    def __init__(self):
-        self.token = os.getenv('QSTASH_TOKEN')
-        self.api_url = "https://qstash.upstash.io/v1/publish"
-        
-        if not self.token:
-            raise Exception("QSTASH_TOKEN not set in environment variables")
+def queue_task_simple(function_name, **kwargs):
+    """Simple task queuing without external services"""
+    task_id = str(uuid.uuid4())
+    redis_client = get_redis_client()
     
-    def publish_task(self, function_name, **kwargs):
-        """Queue a task to be executed"""
-        payload = {
-            "function_name": function_name,
-            **kwargs
-        }
-        
-        headers = {
-            "Authorization": f"Bearer {self.token}",
-            "Content-Type": "application/json"
-        }
-        
-        # The URL where QStash will send the webhook
-        callback_url = os.getenv('BACKEND_URL', 'https://your-app.render.com') + '/api/tasks/execute'
-        
-        response = requests.post(
-            self.api_url,
-            headers=headers,
-            json={
-                "destination": callback_url,
-                "body": json.dumps(payload),
-                "retries": 3,
-                "delay": "0s"
-            }
-        )
-        
-        if response.status_code != 200:
-            raise Exception(f"QStash error: {response.text}")
-        
-        return response.json().get('messageId')
-
-qstash_client = QStashClient()
+    # Mark as processing
+    redis_client.setex(f"task_{task_id}", 3600, "processing")
+    
+    # Execute in background thread
+    def execute():
+        try:
+            if function_name == 'summarize_text_task':
+                from app.utils.summarizer import summarize_text_task
+                result = summarize_text_task(
+                    kwargs['text'],
+                    kwargs['length'],
+                    kwargs['article_id'],
+                    kwargs['user_id']
+                )
+                redis_client.setex(f"summary_{task_id}", 3600, result)
+                redis_client.delete(f"task_{task_id}")
+        except Exception as e:
+            redis_client.setex(f"error_{task_id}", 3600, str(e))
+            redis_client.delete(f"task_{task_id}")
+    
+    thread = threading.Thread(target=execute, daemon=True)
+    thread.start()
+    
+    return task_id
