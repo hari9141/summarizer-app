@@ -35,56 +35,76 @@ const Summarizer = () => {
       const articleTitle = content.substring(0, 50);
       const originalLength = content.length;
   
+      // Step 1: Create article
       const articleRes = await api.post('/articles', {
         title: articleTitle,
         content: content.trim(),
       });
   
-      setSuccess(' Generating summary...');
-      const { task_id, article_id } = (await api.post(
-        `/articles/${articleRes.data.article.id}/summarize`,
-        { length: summaryLength }
-      )).data;
+      const articleId = articleRes.data.article.id;
+      setSuccess('📝 Article saved. Generating summary...');
   
+      // Step 2: Queue summarization task (returns immediately)
+      const summaryRes = await api.post('/summaries', {
+        article_id: articleId,
+        length: summaryLength,
+      });
+  
+      const { task_id } = summaryRes.data;
       setTaskId(task_id);
       pollingRef.current = true;
   
+      // Step 3: Poll for result
       let polledSummary = null;
-      for (let i = 0; i < 30; i++) { 
-        await sleep(2000);
+      for (let i = 0; i < 60; i++) { // Poll up to 2 minutes (60 * 2 seconds)
+        await sleep(2000); // Wait 2 seconds before polling
   
         if (!pollingRef.current) return;
   
-        const pollRes = await api.get(`/articles/summarize_status/${task_id}`);
-        if (pollRes.data.status === 'done' && pollRes.data.summary) {
-          polledSummary = {
-            summary_text: pollRes.data.summary,
-            length: summaryLength,
-            originalLength
-          };
-          break;
-        }
-        if (pollRes.data.status === 'failed') {
-          setError('❌ AI summarization failed. Try again.');
-          setLoading(false);
-          return;
+        try {
+          const pollRes = await api.get(`/summaries/status/${task_id}`);
+          
+          if (pollRes.status === 200 && pollRes.data.status === 'done') {
+            // Task completed!
+            polledSummary = {
+              summary_text: pollRes.data.summary,
+              length: summaryLength,
+              originalLength,
+            };
+            break;
+          }
+  
+          if (pollRes.data.status === 'failed') {
+            setError(`❌ Summarization failed: ${pollRes.data.error}`);
+            setLoading(false);
+            pollingRef.current = false;
+            return;
+          }
+  
+          // Still processing, continue polling
+          setSuccess(`⏳ Processing... (${i + 1}s)`);
+        } catch (pollErr) {
+          console.error('Polling error:', pollErr);
         }
       }
   
       if (polledSummary) {
         setSummary(polledSummary);
-        setSuccess(' Summary generated!');
-        setLoading(false);
+        setSuccess('✅ Summary generated!');
       } else {
         setError('❌ Timed out waiting for summary.');
-        setLoading(false);
       }
+  
+      setLoading(false);
+      pollingRef.current = false;
   
     } catch (err) {
       setError('❌ ' + (err.response?.data?.error || 'Failed to summarize'));
       setLoading(false);
+      pollingRef.current = false;
     }
   };
+
 
   
   const handleReset = () => {
