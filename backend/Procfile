@@ -1,2 +1,1 @@
-web: bash -c "gunicorn -w 2 -b 0.0.0.0:$PORT run:app & celery -A 
-app.utils.celery_worker.celery_app worker --loglevel=info --concurrency=1"
+web: bash -c "gunicorn -w 2 -b 0.0.0.0:$PORT run:app & celery -A app.utils.celery_worker.celery_app worker --loglevel=info --concurrency=1"
